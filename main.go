@@ -1,0 +1,348 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"github.com/google/uuid"
+	"github.com/gorilla/mux"
+	"github.com/jackc/pgx/v4"
+	"github.com/jackc/pgx/v4/pgxpool"
+	"github.com/xssnick/tonutils-go/address"
+	"github.com/xssnick/tonutils-go/liteclient"
+	"github.com/xssnick/tonutils-go/tlb"
+	"github.com/xssnick/tonutils-go/ton"
+	"github.com/xssnick/tonutils-go/ton/wallet"
+	"log"
+	"net/http"
+	"strings"
+)
+
+func connectDB() *pgxpool.Pool {
+	connString := "postgres://postgres:12345@localhost:5432/postgres?sslmode=disable"
+	pool, err := pgxpool.Connect(context.Background(), connString)
+	if err != nil {
+		log.Fatalf("Unable to connect to database: %v", err)
+	}
+	return pool
+}
+
+type User struct {
+	Address string
+	Seed    string
+	ID      string
+}
+
+type SignInRequest struct {
+	ID   string `json:"id"`
+	Seed string `json:"seed"`
+}
+
+type TransferTONRequest struct {
+	SenderAddress    string `json:"sender_address"`
+	AccountID        string `json:"account_id"`
+	Amount           string `json:"amount"`
+	Comment          string `json:"comment"`
+	RecipientAddress string `json:"recipient_address"`
+}
+
+type GetTransactionsHistoryRequest struct {
+	Address string `json:"address"`
+}
+
+type CheckBalanceRequest struct {
+	Address string `json:"address"`
+}
+
+type CheckBalanceResponse struct {
+	Balance string `json:"balance"`
+}
+
+func main() {
+
+	router := mux.NewRouter()
+
+	router.HandleFunc("/createSeed", createSeed).Methods("POST")
+	router.HandleFunc("/signWithSeed", signWithSeed).Methods("POST")
+	router.HandleFunc("/getTransactionsHistory/{address}", getTransactionsHistory).Methods("GET")
+	router.HandleFunc("/transferTON", transferTON).Methods("POST")
+	router.HandleFunc("/checkBalance/{address}", checkBalance).Methods("GET")
+	router.HandleFunc("/checkAssets/{address}", checkAssets).Methods("GET")
+	router.HandleFunc("/deleteAccount", deleteAccount).Methods("DELETE")
+
+	http.ListenAndServe(":8080", router)
+}
+
+func createSeed(w http.ResponseWriter, r *http.Request) {
+
+	client := liteclient.NewConnectionPool()
+
+	configUrl := "https://ton-blockchain.github.io/global.config.json"
+	err := client.AddConnectionsFromConfigUrl(context.Background(), configUrl)
+	if err != nil {
+		panic(err)
+	}
+	api := ton.NewAPIClient(client)
+
+	words := wallet.NewSeed()
+	addressUser, err := wallet.FromSeed(api, words, wallet.V3)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	addressString := addressUser.Address().String()
+	wordString := strings.Join(words, " ")
+	uuidId, _ := uuid.NewRandom() // Implement your ID generation logic
+	id := uuidId.String()
+	db := connectDB()
+	defer db.Close()
+
+	_, err = db.Exec(context.Background(), `INSERT INTO users (id, seed, address) VALUES ($1, $2, $3)`, id, wordString, addressString)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	user := User{
+		ID:      id,
+		Address: addressString,
+		Seed:    wordString,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(user)
+}
+
+func signWithSeed(w http.ResponseWriter, r *http.Request) {
+	var req SignInRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	db := connectDB()
+	defer db.Close()
+
+	var user User
+	err = db.QueryRow(context.Background(), `SELECT id, seed, address FROM users WHERE id = $1`, req.ID).Scan(&user.ID, &user.Seed, &user.Address)
+	client := liteclient.NewConnectionPool()
+
+	configUrl := "https://ton-blockchain.github.io/global.config.json"
+	err = client.AddConnectionsFromConfigUrl(context.Background(), configUrl)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	api := ton.NewAPIClient(client)
+	seedSlice := []string{req.Seed}
+
+	addressUser, err := wallet.FromSeed(api, seedSlice, wallet.V3)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	addressString := addressUser.Address().String()
+
+	if err == pgx.ErrNoRows {
+		// Запись с таким ID не найдена, создаем новую запись
+		user.ID = req.ID
+		user.Seed = req.Seed
+		user.Address = addressString // Тут предполагается функция, которая возвращает адрес по seed фразе
+
+		_, err = db.Exec(context.Background(), `INSERT INTO users (id, seed, address) VALUES ($1, $2, $3)`, user.ID, user.Seed, user.Address)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+	} else if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	} else if user.Seed != req.Seed {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	err = json.NewEncoder(w).Encode(user)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+}
+
+func getTransactionsHistory(w http.ResponseWriter, r *http.Request) {
+	var req GetTransactionsHistoryRequest
+
+	client := liteclient.NewConnectionPool()
+
+	configUrl := "https://ton-blockchain.github.io/global.config.json"
+	err := client.AddConnectionsFromConfigUrl(context.Background(), configUrl)
+	if err != nil {
+		panic(err)
+	}
+	api := ton.NewAPIClient(client)
+	ctx := client.StickyContext(context.Background())
+
+	b, err := api.CurrentMasterchainInfo(ctx)
+	if err != nil {
+		log.Fatalln("get block err:", err.Error())
+		return
+	}
+
+	err = json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	userAddress := req.Address
+	addr := address.MustParseAddr(userAddress)
+
+	account, err := api.GetAccount(context.Background(), b, addr)
+	if err != nil {
+		log.Fatalln("get account err:", err.Error())
+		return
+	}
+
+	list, err := api.ListTransactions(context.Background(), addr, 20, account.LastTxLT, account.LastTxHash)
+	if err != nil {
+		// In some cases you can get error:
+		// lite server error, code XXX: cannot compute block with specified transaction: lt not in db
+		// it means that current lite server does not store older data, you can query one with full history
+		log.Printf("send err: %s", err.Error())
+		return
+	}
+	// Получение истории транзакций для указанного адреса
+	// Здесь вам необходимо реализовать функцию, которая получает историю транзакций
+	// В этом примере, мы просто создаем фиктивный набор байт
+	var buf bytes.Buffer
+
+	for i, t := range list {
+		if i > 0 {
+			buf.WriteString("_")
+		}
+		buf.WriteString(t.String())
+	}
+
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.WriteHeader(http.StatusOK)
+	w.Write(buf.Bytes())
+}
+
+func getSeedFromDatabase(senderAddress, accountID string) (string, error) {
+	db := connectDB()
+	defer db.Close()
+	var seed string
+	err := db.QueryRow(context.Background(), "SELECT seed FROM users WHERE address = $1 AND id = $2", senderAddress, accountID).Scan(&seed)
+	if err != nil {
+		return "", err
+	}
+	return seed, nil
+}
+
+func transferTON(w http.ResponseWriter, r *http.Request) {
+	var req TransferTONRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	senderAddress := req.SenderAddress
+	accountID := req.AccountID
+	amount := req.Amount
+	comment := req.Comment
+	recipientAddress := req.RecipientAddress
+
+	seed, err := getSeedFromDatabase(senderAddress, accountID)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	client := liteclient.NewConnectionPool()
+
+	configUrl := "https://ton-blockchain.github.io/testnet-global.config.json"
+	err = client.AddConnectionsFromConfigUrl(context.Background(), configUrl)
+	if err != nil {
+		panic(err)
+	}
+	api := ton.NewAPIClient(client)
+
+	seedSlice := []string{seed}
+
+	walletUser, err := wallet.FromSeed(api, seedSlice, wallet.V3)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	addr := address.MustParseAddr(recipientAddress)
+
+	err = walletUser.Transfer(context.Background(), addr, tlb.MustFromTON(amount), comment)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	} else {
+		w.WriteHeader(http.StatusOK)
+	}
+}
+
+func checkBalance(w http.ResponseWriter, r *http.Request) {
+
+	client := liteclient.NewConnectionPool()
+
+	configUrl := "https://ton-blockchain.github.io/global.config.json"
+	err := client.AddConnectionsFromConfigUrl(context.Background(), configUrl)
+	if err != nil {
+		panic(err)
+	}
+	api := ton.NewAPIClient(client)
+
+	var req CheckBalanceRequest
+	err = json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	addr := address.MustParseAddr(req.Address)
+
+	ctx := client.StickyContext(context.Background())
+
+	block, err := api.CurrentMasterchainInfo(ctx)
+	if err != nil {
+		log.Fatalln("get block err:", err.Error())
+		return
+	}
+
+	res, err := api.WaitForBlock(block.SeqNo).GetAccount(ctx, block, addr)
+	if err != nil {
+		log.Fatalln("get account err:", err.Error())
+		return
+	}
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	// Получение баланса для указанного адреса
+	// Здесь вам необходимо реализовать функцию, которая получает баланс
+	// В этом примере, мы просто создаем фиктивный баланс
+	balance := res.State.Balance.TON()
+
+	resp := CheckBalanceResponse{Balance: balance}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(resp)
+}
+
+func checkAssets(w http.ResponseWriter, r *http.Request) {
+	// Implement the NFT assets retrieval logic here
+}
+
+func deleteAccount(w http.ResponseWriter, r *http.Request) {
+	// Implement the account deletion logic here
+}
