@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
-	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/xssnick/tonutils-go/address"
 	"github.com/xssnick/tonutils-go/liteclient"
@@ -66,7 +65,7 @@ func main() {
 	router.HandleFunc("/signWithSeed", signWithSeed).Methods("POST")
 	router.HandleFunc("/getTransactionsHistory/{address}", getTransactionsHistory).Methods("GET")
 	router.HandleFunc("/transferTON", transferTON).Methods("POST")
-	router.HandleFunc("/checkBalance/{address}", checkBalance).Methods("GET")
+	router.HandleFunc("/checkBalance", checkBalance).Methods("GET")
 	router.HandleFunc("/checkAssets/{address}", checkAssets).Methods("GET")
 	router.HandleFunc("/deleteAccount", deleteAccount).Methods("DELETE")
 
@@ -136,7 +135,7 @@ func signWithSeed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	api := ton.NewAPIClient(client)
-	seedSlice := []string{req.Seed}
+	seedSlice := strings.Split(req.Seed, " ")
 
 	addressUser, err := wallet.FromSeed(api, seedSlice, wallet.V3)
 	if err != nil {
@@ -144,26 +143,20 @@ func signWithSeed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	addressString := addressUser.Address().String()
+	// Запись с таким ID не найдена, создаем новую запись
+	user.ID = req.ID
+	user.Seed = req.Seed
+	user.Address = addressString // Тут предполагается функция, которая возвращает адрес по seed фразе
 
-	if err == pgx.ErrNoRows {
-		// Запись с таким ID не найдена, создаем новую запись
-		user.ID = req.ID
-		user.Seed = req.Seed
-		user.Address = addressString // Тут предполагается функция, которая возвращает адрес по seed фразе
-
-		_, err = db.Exec(context.Background(), `INSERT INTO users (id, seed, address) VALUES ($1, $2, $3)`, user.ID, user.Seed, user.Address)
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-	} else if err != nil {
+	_, err = db.Exec(context.Background(), `INSERT INTO users (id, seed, address) VALUES ($1, $2, $3)`, user.ID, user.Seed, user.Address)
+	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
-	} else if user.Seed != req.Seed {
-		w.WriteHeader(http.StatusUnauthorized)
+	}
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	err = json.NewEncoder(w).Encode(user)
