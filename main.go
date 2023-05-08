@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/jackc/pgx/v4/pgxpool"
@@ -63,10 +64,10 @@ func main() {
 
 	router.HandleFunc("/createSeed", createSeed).Methods("POST")
 	router.HandleFunc("/signWithSeed", signWithSeed).Methods("POST")
-	router.HandleFunc("/getTransactionsHistory/{address}", getTransactionsHistory).Methods("GET")
+	router.HandleFunc("/getTransactionsHistory", getTransactionsHistory).Methods("GET")
 	router.HandleFunc("/transferTON", transferTON).Methods("POST")
 	router.HandleFunc("/checkBalance", checkBalance).Methods("GET")
-	router.HandleFunc("/checkAssets/{address}", checkAssets).Methods("GET")
+	router.HandleFunc("/checkAssets", checkAssets).Methods("GET")
 	router.HandleFunc("/deleteAccount", deleteAccount).Methods("DELETE")
 
 	http.ListenAndServe(":8080", router)
@@ -171,11 +172,12 @@ func getTransactionsHistory(w http.ResponseWriter, r *http.Request) {
 
 	client := liteclient.NewConnectionPool()
 
-	configUrl := "https://ton-blockchain.github.io/global.config.json"
-	err := client.AddConnectionsFromConfigUrl(context.Background(), configUrl)
+	err := client.AddConnection(context.Background(), "135.181.140.212:13206", "K0t3+IWLOXHYMvMcrGZDPs+pn58a17LFbnXoQkKc2xw=")
 	if err != nil {
-		panic(err)
+		log.Fatalln("connection err: ", err.Error())
+		return
 	}
+
 	api := ton.NewAPIClient(client)
 	ctx := client.StickyContext(context.Background())
 
@@ -194,13 +196,26 @@ func getTransactionsHistory(w http.ResponseWriter, r *http.Request) {
 	userAddress := req.Address
 	addr := address.MustParseAddr(userAddress)
 
-	account, err := api.GetAccount(context.Background(), b, addr)
+	res, err := api.WaitForBlock(b.SeqNo).GetAccount(ctx, b, addr)
 	if err != nil {
 		log.Fatalln("get account err:", err.Error())
 		return
 	}
 
-	list, err := api.ListTransactions(context.Background(), addr, 20, account.LastTxLT, account.LastTxHash)
+	fmt.Printf("Is active: %v\n", res.IsActive)
+	if res.IsActive {
+		fmt.Printf("Status: %s\n", res.State.Status)
+		fmt.Printf("Balance: %s TON\n", res.State.Balance.TON())
+		if res.Data != nil {
+			fmt.Printf("Data: %s\n", res.Data.Dump())
+		}
+	}
+
+	// take last tx info from account info
+	lastHash := res.LastTxHash
+	lastLt := res.LastTxLT
+
+	list, err := api.ListTransactions(context.Background(), addr, 15, lastLt, lastHash)
 	if err != nil {
 		// In some cases you can get error:
 		// lite server error, code XXX: cannot compute block with specified transaction: lt not in db
@@ -323,13 +338,19 @@ func checkBalance(w http.ResponseWriter, r *http.Request) {
 	// Получение баланса для указанного адреса
 	// Здесь вам необходимо реализовать функцию, которая получает баланс
 	// В этом примере, мы просто создаем фиктивный баланс
-	balance := res.State.Balance.TON()
+	if res.State == nil {
+		resp := CheckBalanceResponse{Balance: "0 TON"}
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(resp)
+	} else {
+		balance := res.State.Balance.TON()
 
-	resp := CheckBalanceResponse{Balance: balance}
+		resp := CheckBalanceResponse{Balance: balance}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(resp)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(resp)
+	}
 }
 
 func checkAssets(w http.ResponseWriter, r *http.Request) {
