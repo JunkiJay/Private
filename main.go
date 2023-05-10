@@ -64,10 +64,10 @@ func main() {
 
 	router.HandleFunc("/createSeed", createSeed).Methods("POST")
 	router.HandleFunc("/signWithSeed", signWithSeed).Methods("POST")
-	router.HandleFunc("/getTransactionsHistory", getTransactionsHistory).Methods("GET")
+	router.HandleFunc("/getTransactionsHistory", getTransactionsHistory).Methods("POST")
 	router.HandleFunc("/transferTON", transferTON).Methods("POST")
-	router.HandleFunc("/checkBalance", checkBalance).Methods("GET")
-	router.HandleFunc("/checkAssets", checkAssets).Methods("GET")
+	router.HandleFunc("/checkBalance", checkBalance).Methods("POST")
+	router.HandleFunc("/checkAssets", checkAssets).Methods("POST")
 	router.HandleFunc("/deleteAccount", deleteAccount).Methods("DELETE")
 
 	http.ListenAndServe(":8080", router)
