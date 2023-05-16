@@ -80,7 +80,7 @@ func createSeed(w http.ResponseWriter, r *http.Request) {
 	configUrl := "https://ton-blockchain.github.io/global.config.json"
 	err := client.AddConnectionsFromConfigUrl(context.Background(), configUrl)
 	if err != nil {
-		panic(err)
+		log.Fatalln(err)
 	}
 	api := ton.NewAPIClient(client)
 
@@ -272,14 +272,14 @@ func transferTON(w http.ResponseWriter, r *http.Request) {
 	}
 	client := liteclient.NewConnectionPool()
 
-	configUrl := "https://ton-blockchain.github.io/testnet-global.config.json"
-	err = client.AddConnectionsFromConfigUrl(context.Background(), configUrl)
+	err = client.AddConnection(context.Background(), "135.181.140.212:13206", "K0t3+IWLOXHYMvMcrGZDPs+pn58a17LFbnXoQkKc2xw=")
 	if err != nil {
-		panic(err)
+		log.Fatalln("connection err: ", err.Error())
+		return
 	}
 	api := ton.NewAPIClient(client)
 
-	seedSlice := []string{seed}
+	seedSlice := strings.Split(seed, " ")
 
 	walletUser, err := wallet.FromSeed(api, seedSlice, wallet.V3)
 	if err != nil {
@@ -302,10 +302,10 @@ func checkBalance(w http.ResponseWriter, r *http.Request) {
 
 	client := liteclient.NewConnectionPool()
 
-	configUrl := "https://ton-blockchain.github.io/global.config.json"
-	err := client.AddConnectionsFromConfigUrl(context.Background(), configUrl)
+	err := client.AddConnection(context.Background(), "135.181.140.212:13206", "K0t3+IWLOXHYMvMcrGZDPs+pn58a17LFbnXoQkKc2xw=")
 	if err != nil {
-		panic(err)
+		log.Fatalln("connection err: ", err.Error())
+		return
 	}
 	api := ton.NewAPIClient(client)
 
