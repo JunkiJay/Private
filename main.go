@@ -67,10 +67,48 @@ func main() {
 	router.HandleFunc("/getTransactionsHistory", getTransactionsHistory).Methods("POST")
 	router.HandleFunc("/transferTON", transferTON).Methods("POST")
 	router.HandleFunc("/checkBalance", checkBalance).Methods("POST")
-	router.HandleFunc("/checkAssets", checkAssets).Methods("POST")
+	router.HandleFunc("/checkAccount", checkAccount).Methods("POST")
 	router.HandleFunc("/deleteAccount", deleteAccount).Methods("DELETE")
 
 	http.ListenAndServe(":8080", router)
+}
+
+func checkAccount(w http.ResponseWriter, r *http.Request) {
+
+	client := liteclient.NewConnectionPool()
+
+	err := client.AddConnection(context.Background(), "135.181.140.212:13206", "K0t3+IWLOXHYMvMcrGZDPs+pn58a17LFbnXoQkKc2xw=")
+	if err != nil {
+		log.Fatalln("connection err: ", err.Error())
+		return
+	}
+	api := ton.NewAPIClient(client)
+
+	var req CheckBalanceRequest
+	err = json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	ctx := client.StickyContext(context.Background())
+
+	b, err := api.CurrentMasterchainInfo(ctx)
+	if err != nil {
+		log.Fatalln("get block err:", err.Error())
+		return
+	}
+	addr := address.MustParseAddr(req.Address)
+
+	_, err = api.WaitForBlock(b.SeqNo).GetAccount(ctx, b, addr)
+	w.Header().Set("Content-Type", "application/json")
+
+	if err != nil {
+		w.WriteHeader(http.StatusLocked)
+	} else {
+		w.WriteHeader(http.StatusOK)
+	}
+
 }
 
 func createSeed(w http.ResponseWriter, r *http.Request) {
@@ -126,7 +164,6 @@ func signWithSeed(w http.ResponseWriter, r *http.Request) {
 	defer db.Close()
 
 	var user User
-	err = db.QueryRow(context.Background(), `SELECT id, seed, address FROM users WHERE id = $1`, req.ID).Scan(&user.ID, &user.Seed, &user.Address)
 	client := liteclient.NewConnectionPool()
 
 	configUrl := "https://ton-blockchain.github.io/global.config.json"
