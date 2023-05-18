@@ -58,6 +58,14 @@ type CheckBalanceResponse struct {
 	Balance string `json:"balance"`
 }
 
+type AddressesStruct struct {
+	Id string `json:"id"`
+}
+
+type Adresses struct {
+	Address string `json:"address"`
+}
+
 func main() {
 
 	router := mux.NewRouter()
@@ -68,7 +76,7 @@ func main() {
 	router.HandleFunc("/transferTON", transferTON).Methods("POST")
 	router.HandleFunc("/checkBalance", checkBalance).Methods("POST")
 	router.HandleFunc("/checkAccount", checkAccount).Methods("POST")
-	router.HandleFunc("/deleteAccount", deleteAccount).Methods("DELETE")
+	router.HandleFunc("/getAccounts", getAccounts).Methods("POST")
 
 	http.ListenAndServe(":8080", router)
 }
@@ -82,8 +90,6 @@ func checkAccount(w http.ResponseWriter, r *http.Request) {
 		log.Fatalln("connection err: ", err.Error())
 		return
 	}
-	api := ton.NewAPIClient(client)
-
 	var req CheckBalanceRequest
 	err = json.NewDecoder(r.Body).Decode(&req)
 	if err != nil {
@@ -91,24 +97,13 @@ func checkAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := client.StickyContext(context.Background())
-
-	b, err := api.CurrentMasterchainInfo(ctx)
-	if err != nil {
-		log.Fatalln("get block err:", err.Error())
-		return
-	}
-	addr := address.MustParseAddr(req.Address)
-
-	_, err = api.WaitForBlock(b.SeqNo).GetAccount(ctx, b, addr)
-	w.Header().Set("Content-Type", "application/json")
+	_, err = address.ParseAddr(req.Address)
 
 	if err != nil {
 		w.WriteHeader(http.StatusLocked)
 	} else {
 		w.WriteHeader(http.StatusOK)
 	}
-
 }
 
 func createSeed(w http.ResponseWriter, r *http.Request) {
@@ -177,7 +172,7 @@ func signWithSeed(w http.ResponseWriter, r *http.Request) {
 
 	addressUser, err := wallet.FromSeed(api, seedSlice, wallet.V3)
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
+		w.WriteHeader(http.StatusLocked)
 		return
 	}
 	addressString := addressUser.Address().String()
@@ -390,8 +385,32 @@ func checkBalance(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func checkAssets(w http.ResponseWriter, r *http.Request) {
-	// Implement the NFT assets retrieval logic here
+func getAccounts(w http.ResponseWriter, r *http.Request) {
+	db := connectDB()
+	defer db.Close()
+	var req AddressesStruct
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	rows, err := db.Query(context.Background(), "SELECT address FROM users WHERE id=$1", req.Id)
+	if err != nil {
+		w.WriteHeader(http.StatusBadGateway)
+	}
+	defer rows.Close()
+	var users []Adresses
+	for rows.Next() {
+		var user Adresses
+		err = rows.Scan(&user.Address)
+		if err != nil {
+			w.WriteHeader(http.StatusBadGateway)
+		}
+		users = append(users, user)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(users)
+
 }
 
 func deleteAccount(w http.ResponseWriter, r *http.Request) {
