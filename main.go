@@ -12,6 +12,7 @@ import (
 	"github.com/xssnick/tonutils-go/liteclient"
 	"github.com/xssnick/tonutils-go/tlb"
 	"github.com/xssnick/tonutils-go/ton"
+	"github.com/xssnick/tonutils-go/ton/nft"
 	"github.com/xssnick/tonutils-go/ton/wallet"
 	"log"
 	"net/http"
@@ -62,6 +63,10 @@ type AddressesStruct struct {
 	Id string `json:"id"`
 }
 
+type NFTstruct struct {
+	addr string `json:"NFT_addr"`
+}
+
 type Adresses struct {
 	Address string `json:"address"`
 }
@@ -77,6 +82,7 @@ func main() {
 	router.HandleFunc("/checkBalance", checkBalance).Methods("POST")
 	router.HandleFunc("/checkAccount", checkAccount).Methods("POST")
 	router.HandleFunc("/getAccounts", getAccounts).Methods("POST")
+	router.HandleFunc("/getNFT", getNFTdata).Methods("POST")
 
 	http.ListenAndServe(":8080", router)
 }
@@ -410,6 +416,41 @@ func getAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(users)
+
+}
+
+func getNFTdata(w http.ResponseWriter, r *http.Request) {
+	client := liteclient.NewConnectionPool()
+
+	err := client.AddConnection(context.Background(), "135.181.140.212:13206", "K0t3+IWLOXHYMvMcrGZDPs+pn58a17LFbnXoQkKc2xw=")
+	if err != nil {
+		log.Fatalln("connection err: ", err.Error())
+		return
+	}
+	api := ton.NewAPIClient(client)
+	var req NFTstruct
+	err = json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	nftAddr := address.MustParseAddr(req.addr)
+	item := nft.NewItemClient(api, nftAddr)
+
+	nftData, err := item.GetNFTData(context.Background())
+	if err != nil {
+		panic(err)
+	}
+
+	// get info about our nft's collection
+	collection := nft.NewCollectionClient(api, nftData.CollectionAddress)
+	collectionData, err := collection.GetCollectionData(context.Background())
+	if err != nil {
+		panic(err)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(collectionData)
 
 }
 
